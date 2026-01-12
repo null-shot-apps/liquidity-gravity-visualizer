@@ -1,3 +1,5 @@
+import { cmcService, type TokenData } from './coinmarketcap';
+
 interface Zone {
   type: 'high' | 'medium' | 'low';
   priceRange: [number, number];
@@ -10,40 +12,48 @@ interface Insight {
   message: string;
 }
 
-interface LiquidityData {
+export interface LiquidityData {
   currentPrice: number;
   direction: 'up' | 'down' | 'neutral';
   directionStrength: number;
   zones: Zone[];
   insights: Insight[];
   risks: string[];
+  tokenData?: TokenData;
 }
 
 /**
  * Generate realistic liquidity gravity data based on token, chain, and timeframe
- * This is a hybrid model that simulates realistic liquidity patterns
- * In production, this would integrate with real DEX APIs (Uniswap, Jupiter, etc.)
+ * Integrates with CoinMarketCap for real token data and prices
+ * Uses hybrid model: real price data + simulated liquidity patterns
  */
-export function generateLiquidityData(
+export async function generateLiquidityData(
   tokenSymbol: string,
   chain: string,
   timeframe: string
-): LiquidityData {
-  // Simulate realistic price based on token symbol
-  const basePrice = getBasePrice(tokenSymbol);
-  const currentPrice = basePrice * (1 + (Math.random() - 0.5) * 0.1); // ±5% variance
+): Promise<LiquidityData> {
+  // Fetch real token data from CoinMarketCap
+  const tokenData = await cmcService.getTokenData(tokenSymbol, chain);
+  
+  if (!tokenData) {
+    throw new Error(`Token ${tokenSymbol} not found on ${chain}`);
+  }
+
+  // Use real current price from CoinMarketCap
+  const currentPrice = tokenData.price.price;
 
   // Generate liquidity zones based on price clustering patterns
-  const zones = generateZones(currentPrice, timeframe);
+  // Enhanced with volume and volatility data from CMC
+  const zones = generateZones(currentPrice, timeframe, tokenData);
 
-  // Determine directional pull based on zone distribution
-  const { direction, strength } = calculateDirectionalPull(zones, currentPrice);
+  // Determine directional pull based on zone distribution and price momentum
+  const { direction, strength } = calculateDirectionalPull(zones, currentPrice, tokenData);
 
   // Generate contextual insights
-  const insights = generateInsights(zones, currentPrice, direction, timeframe);
+  const insights = generateInsights(zones, currentPrice, direction, timeframe, tokenData);
 
   // Generate risk warnings
-  const risks = generateRisks(zones, currentPrice, direction);
+  const risks = generateRisks(zones, currentPrice, direction, tokenData);
 
   return {
     currentPrice,
@@ -51,34 +61,12 @@ export function generateLiquidityData(
     directionStrength: strength,
     zones,
     insights,
-    risks
+    risks,
+    tokenData
   };
 }
 
-function getBasePrice(symbol: string): number {
-  const prices: Record<string, number> = {
-    'ETH': 3500,
-    'BTC': 45000,
-    'SOL': 110,
-    'USDC': 1,
-    'USDT': 1,
-    'WETH': 3500,
-    'ARB': 2.1,
-    'OP': 3.8,
-    'MATIC': 0.85,
-    'AVAX': 38,
-    'LINK': 15,
-    'UNI': 7.5,
-    'AAVE': 95,
-    'CRV': 0.65,
-    'MKR': 1800
-  };
-
-  const upperSymbol = symbol.toUpperCase();
-  return prices[upperSymbol] || 100; // Default to $100 for unknown tokens
-}
-
-function generateZones(currentPrice: number, timeframe: string): Zone[] {
+function generateZones(currentPrice: number, timeframe: string, tokenData?: TokenData): Zone[] {
   const zones: Zone[] = [];
   
   // Timeframe affects zone width
@@ -89,7 +77,17 @@ function generateZones(currentPrice: number, timeframe: string): Zone[] {
     '1d': 0.08    // ±8% zones
   };
   
-  const mult = multipliers[timeframe as keyof typeof multipliers] || 0.03;
+  let mult = multipliers[timeframe as keyof typeof multipliers] || 0.03;
+  
+  // Adjust zone width based on token volatility (from CMC data)
+  if (tokenData) {
+    const volatility = Math.abs(tokenData.price.percent_change_24h);
+    if (volatility > 10) {
+      mult *= 1.5; // Wider zones for volatile tokens
+    } else if (volatility < 2) {
+      mult *= 0.7; // Tighter zones for stable tokens
+    }
+  }
 
   // Generate zones above and below current price
   // Pattern: Strong liquidity tends to cluster at round numbers and recent price levels
@@ -142,7 +140,7 @@ function generateZones(currentPrice: number, timeframe: string): Zone[] {
   return zones;
 }
 
-function calculateDirectionalPull(zones: Zone[], currentPrice: number): { direction: 'up' | 'down' | 'neutral'; strength: number } {
+function calculateDirectionalPull(zones: Zone[], currentPrice: number, tokenData?: TokenData): { direction: 'up' | 'down' | 'neutral'; strength: number } {
   let upwardPull = 0;
   let downwardPull = 0;
 
@@ -158,7 +156,18 @@ function calculateDirectionalPull(zones: Zone[], currentPrice: number): { direct
   });
 
   const total = upwardPull + downwardPull;
-  const netPull = upwardPull - downwardPull;
+  let netPull = upwardPull - downwardPull;
+  
+  // Factor in price momentum from CMC data
+  if (tokenData) {
+    const momentum = tokenData.price.percent_change_1h;
+    if (momentum > 1) {
+      netPull += 1; // Boost upward pull
+    } else if (momentum < -1) {
+      netPull -= 1; // Boost downward pull
+    }
+  }
+  
   const pullRatio = total > 0 ? Math.abs(netPull) / total : 0;
 
   let direction: 'up' | 'down' | 'neutral';
@@ -178,7 +187,7 @@ function calculateDirectionalPull(zones: Zone[], currentPrice: number): { direct
   return { direction, strength: Math.round(strength) };
 }
 
-function generateInsights(zones: Zone[], currentPrice: number, direction: string, timeframe: string): Insight[] {
+function generateInsights(zones: Zone[], currentPrice: number, direction: string, timeframe: string, tokenData?: TokenData): Insight[] {
   const insights: Insight[] = [];
 
   // Find current zone
@@ -221,6 +230,18 @@ function generateInsights(zones: Zone[], currentPrice: number, direction: string
     });
   }
 
+  // Volume-based insight
+  if (tokenData) {
+    const volumeChange = tokenData.price.volume_change_24h;
+    if (Math.abs(volumeChange) > 50) {
+      insights.push({
+        type: 'warning',
+        title: volumeChange > 0 ? 'Volume Surge Detected' : 'Volume Drop Detected',
+        message: `24h volume ${volumeChange > 0 ? 'increased' : 'decreased'} by ${Math.abs(volumeChange).toFixed(1)}%. ${volumeChange > 0 ? 'Increased activity may signal shifting liquidity.' : 'Lower volume may mean thinner liquidity.'}`
+      });
+    }
+  }
+
   // Timeframe-specific insight
   if (timeframe === '15m' || timeframe === '1h') {
     insights.push({
@@ -239,7 +260,7 @@ function generateInsights(zones: Zone[], currentPrice: number, direction: string
   return insights.slice(0, 4); // Return max 4 insights
 }
 
-function generateRisks(zones: Zone[], currentPrice: number, direction: string): string[] {
+function generateRisks(zones: Zone[], currentPrice: number, direction: string, tokenData?: TokenData): string[] {
   const risks: string[] = [];
 
   const lowLiqZones = zones.filter(z => z.type === 'low');
@@ -256,10 +277,28 @@ function generateRisks(zones: Zone[], currentPrice: number, direction: string): 
   if (lowLiqZones.length > 2) {
     risks.push('Sudden Move Risk: Multiple thin liquidity zones nearby increase volatility potential');
   }
+  
+  // Add volatility-based risk from CMC data
+  if (tokenData) {
+    const volatility = Math.abs(tokenData.price.percent_change_24h);
+    if (volatility > 15) {
+      risks.push(`High Volatility: Token moved ${volatility.toFixed(1)}% in 24h. Expect continued large swings`);
+    }
+  }
 
   risks.push('Market Risk: External factors (news, macro events) can override liquidity patterns');
   risks.push('Data Lag: Liquidity can shift rapidly. This is a snapshot, not a prediction');
 
   return risks;
 }
+
+
+
+
+
+
+
+
+
+
 

@@ -1,3 +1,5 @@
+import { cmcService } from '@/lib/coinmarketcap';
+
 interface TokenInputProps {
   tokenSymbol: string;
   setTokenSymbol: (value: string) => void;
@@ -32,6 +34,9 @@ export function TokenInput({
     { value: '4h', label: '4 hours' },
     { value: '1d', label: '1 day' }
   ] as const;
+
+  // Get supported tokens for current chain
+  const supportedTokens = cmcService.getSupportedTokens(chain);
 
   return (
     <div className="bg-slate-900/50 backdrop-blur-sm border border-slate-800/50 rounded-xl p-6">
@@ -89,16 +94,24 @@ export function TokenInput({
       </div>
 
       {/* Analyze Button */}
-      <div className="mt-4">
+      <div className="mt-4 flex items-center gap-4">
         <button
           onClick={onAnalyze}
           disabled={!tokenSymbol.trim() || analyzing}
-          className="w-full md:w-auto px-8 py-2.5 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed rounded-lg font-medium transition-all shadow-lg shadow-blue-500/20 hover:shadow-blue-500/30"
+          className="px-8 py-2.5 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed rounded-lg font-medium transition-all shadow-lg shadow-blue-500/20 hover:shadow-blue-500/30"
         >
           {analyzing ? 'Analyzing...' : 'Analyze Liquidity'}
         </button>
+        
+        {/* Supported tokens hint */}
+        <div className="text-xs text-slate-500">
+          Supported: {supportedTokens.slice(0, 5).join(', ')}
+          {supportedTokens.length > 5 && ` +${supportedTokens.length - 5} more`}
+        </div>
       </div>
     </div>
   );
 }
+
+
 
